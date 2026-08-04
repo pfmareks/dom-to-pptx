@@ -195,6 +195,11 @@ export function textWrapOptions(style) {
 const NO_WRAP_SLACK_RATIO = 0.06;
 const NO_WRAP_SLACK_MIN_IN = 0.02;
 
+// PPTX "single" line spacing is about 1.2x the font size, so a relative line spacing
+// of 100% means 1.2em. DrawingML stores <a:spcPct> in thousandths of a percent.
+const PPTX_SINGLE_SPACING_BASIS = 1.2;
+const DRAWINGML_PERCENT_SCALE = 100000;
+
 function noWrapSlackIn(widthIn) {
   return Math.max(widthIn * NO_WRAP_SLACK_RATIO, NO_WRAP_SLACK_MIN_IN);
 }
@@ -627,6 +632,7 @@ export function getTextStyle(style, scale, includeMargins = true, inheritedOpaci
   }
 
   let lineSpacing = null;
+  let lineSpacingMultiple = null;
   const fontSizePx = parseFloat(style.fontSize);
   const lhStr = style.lineHeight;
 
@@ -640,10 +646,21 @@ export function getTextStyle(style, scale, includeMargins = true, inheritedOpaci
       lhPx = lhPx * fontSizePx;
     }
 
-    if (!isNaN(lhPx) && lhPx > 0) {
-      // Convert Pixel Height to Point Height (1px = 0.75pt)
-      // And apply the global layout scale.
-      lineSpacing = lhPx * 0.75 * scale;
+    if (!isNaN(lhPx) && lhPx > 0 && !isNaN(fontSizePx) && fontSizePx > 0) {
+      if (textWraps(style)) {
+        // Relative spacing, which viewers agree on. Floored to DrawingML's 1/1000
+        // percent precision so the serialized value never rounds up past the
+        // browser's line height.
+        lineSpacingMultiple =
+          Math.floor((lhPx / fontSizePx / PPTX_SINGLE_SPACING_BASIS) * DRAWINGML_PERCENT_SCALE) /
+          DRAWINGML_PERCENT_SCALE;
+      } else {
+        // A single measured line cannot re-wrap, so exact point spacing is safe and
+        // reproduces the browser's line box precisely.
+        // Convert Pixel Height to Point Height (1px = 0.75pt)
+        // And apply the global layout scale.
+        lineSpacing = lhPx * 0.75 * scale;
+      }
     }
   }
 
@@ -672,6 +689,7 @@ export function getTextStyle(style, scale, includeMargins = true, inheritedOpaci
     underline: style.textDecoration.includes('underline'),
     // Only add if we have a valid value
     ...(lineSpacing && { lineSpacing }),
+    ...(lineSpacingMultiple && { lineSpacingMultiple }),
     ...(paraSpaceBefore > 0 && { paraSpaceBefore }),
     ...(paraSpaceAfter > 0 && { paraSpaceAfter }),
     // Map background color to highlight if present

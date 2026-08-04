@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **List Text Insets**: Fixed the `<ul>`/`<ol>` text inset order in `src/index.js`. PptxGenJS consumes a text box's `margin` array as `[lIns, rIns, bIns, tIns]`, but the list path built it as `[top, right, bottom, left]`, so a list's top padding was exported as its left inset and its left padding as its top inset.
+- **Deprecated Autofit Option**: Replaced `autoFit: true` with the supported `fit` option at every text call site. Wrapping text now serializes `<a:normAutofit/>` (shrink to fit) instead of `<a:spAutoFit/>` (grow the box), which turned a re-wrap in another renderer into visible overflow; no-wrap text emits no autofit at all.
+- **No-Wrap Text Across Renderers**: Added `withNoWrapWidthSlack` in `src/utils.js`, giving `white-space: nowrap`/`pre` text boxes max(6%, 0.02in) of horizontal slack so a renderer with wider font metrics cannot re-break a single measured line. Google Slides has no "don't wrap" text property. Wrapping text is deliberately excluded so it stays inside its browser-measured rectangle.
+- **Filled Shape Geometry With No-Wrap Text**: A shape with a fill, border, or shadow now keeps its exact measured geometry and its no-wrap text is emitted as a separate invisible text box that takes the slack, instead of the shape being stretched or the authored CSS padding being carved into.
+- **Relative Line Spacing For Wrapping Text**: Wrapping text now serializes line height as `<a:spcPct>` against the ~1.2em PPTX single-spacing basis rather than exact `<a:spcPts>`, which viewers quantize and disagree on. No-wrap text keeps exact points; vertical writing modes emit neither.
+
+### Changed
+
+- **Git Install Packaging**: Added a `prepare` script so installing this package straight from git builds `dist/`, which is git-ignored but shipped via `files`.
+
 ## [2.1.1] - 2026-07-21
 
 ### Fixed

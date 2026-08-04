@@ -153,6 +153,87 @@ export function extractTableData(node, scale) {
   return { rows, colWidths };
 }
 
+/**
+ * Whether text in an element may re-wrap in the exported slide, from its computed
+ * CSS `white-space`.
+ *
+ * `nowrap` and `pre` elements were measured by the browser as a single line, so the
+ * export must keep them on one line (`wrap: false` -> `wrap="none"`); every other
+ * `white-space` value soft-wraps and keeps wrapping in the slide.
+ */
+export function textWraps(style) {
+  return !(style.whiteSpace === 'nowrap' || style.whiteSpace === 'pre');
+}
+
+/**
+ * The wrap and autofit options for a text box, derived from its computed CSS
+ * `white-space`. Spread into a PptxGenJS text options object.
+ *
+ * Wrapping boxes get `fit: 'shrink'` (`<a:normAutofit/>`): a renderer whose glyph
+ * metrics run wider than the browser's re-wraps the paragraph into an extra line,
+ * and shrink-to-fit keeps that line inside the box instead of spilling it over the
+ * content below. The alternative, `<a:spAutoFit/>`, grows the box instead - and
+ * LibreOffice's spAutoFit re-layout even ignores `wrap="none"`.
+ *
+ * No-wrap boxes get `fit: 'none'` (no autofit element at all): their single
+ * browser-measured line has nothing to fit.
+ *
+ * Known limitation: a bare `<a:normAutofit/>` carries no fontScale, and desktop
+ * PowerPoint only computes one when the shape is next edited
+ * (https://github.com/gitbrent/PptxGenJS/issues/544), so the shrink is a backstop
+ * rather than a guarantee there.
+ */
+export function textWrapOptions(style) {
+  const wrap = textWraps(style);
+  return { wrap, fit: wrap ? 'shrink' : 'none' };
+}
+
+// Extra width a no-wrap line may need when another renderer's font metrics run wider
+// than the browser's. 6% covers the glyph-advance drift measured between Arial and
+// its usual metric-compatible substitutes; the absolute floor keeps small labels,
+// where 6% is a fraction of a character, from getting effectively nothing.
+const NO_WRAP_SLACK_RATIO = 0.06;
+const NO_WRAP_SLACK_MIN_IN = 0.02;
+
+// PPTX "single" line spacing is about 1.2x the font size, so a relative line spacing
+// of 100% means 1.2em. DrawingML stores <a:spcPct> in thousandths of a percent.
+const PPTX_SINGLE_SPACING_BASIS = 1.2;
+const DRAWINGML_PERCENT_SCALE = 100000;
+
+function noWrapSlackIn(widthIn) {
+  return Math.max(widthIn * NO_WRAP_SLACK_RATIO, NO_WRAP_SLACK_MIN_IN);
+}
+
+/**
+ * Adds horizontal slack to a no-wrap text box so its single line survives a renderer
+ * with wider font metrics. Returns `options` untouched when it does not apply.
+ *
+ * Text boxes are exported at the exact pixel width the browser measured, and Google
+ * Slides has no "don't wrap" text property at all - imported text always wraps at the
+ * shape width - so a substituted font that is a fraction of a percent wider re-breaks
+ * a label that was measured as one line. Widening the box absorbs that drift, and `x`
+ * shifts with the alignment so the rendered text keeps its visual anchor.
+ *
+ * Only no-wrap boxes are widened. Wrapping text must stay inside its browser-measured
+ * rectangle: widening it would consume an authored inset or push the box past its
+ * containing boundary, and it does not need the slack anyway - it is allowed to wrap.
+ * Rotated and vertical-writing boxes are left alone too, since their layout does not
+ * grow along `w`.
+ *
+ * Callers must not apply this to a box that also draws a fill, border, or shadow:
+ * widening it would stretch the visible shape.
+ */
+export function withNoWrapWidthSlack(options) {
+  if (options.wrap !== false || options.vert || options.rotate || !(options.w > 0)) {
+    return options;
+  }
+  const slack = noWrapSlackIn(options.w);
+  // Keep the text anchored where it was measured: a left-anchored box grows to the
+  // right, a centered one grows evenly, a right-anchored one grows to the left.
+  const anchorShift = options.align === 'right' ? slack : options.align === 'center' ? slack / 2 : 0;
+  return { ...options, x: options.x - anchorShift, w: options.w + slack };
+}
+
 // Checks if any parent element has overflow: hidden which would clip this element
 export function isClippedByParent(node) {
   let parent = node.parentElement;
@@ -551,6 +632,7 @@ export function getTextStyle(style, scale, includeMargins = true, inheritedOpaci
   }
 
   let lineSpacing = null;
+  let lineSpacingMultiple = null;
   const fontSizePx = parseFloat(style.fontSize);
   const lhStr = style.lineHeight;
 
@@ -564,10 +646,21 @@ export function getTextStyle(style, scale, includeMargins = true, inheritedOpaci
       lhPx = lhPx * fontSizePx;
     }
 
-    if (!isNaN(lhPx) && lhPx > 0) {
-      // Convert Pixel Height to Point Height (1px = 0.75pt)
-      // And apply the global layout scale.
-      lineSpacing = lhPx * 0.75 * scale;
+    if (!isNaN(lhPx) && lhPx > 0 && !isNaN(fontSizePx) && fontSizePx > 0) {
+      if (textWraps(style)) {
+        // Relative spacing, which viewers agree on. Floored to DrawingML's 1/1000
+        // percent precision so the serialized value never rounds up past the
+        // browser's line height.
+        lineSpacingMultiple =
+          Math.floor((lhPx / fontSizePx / PPTX_SINGLE_SPACING_BASIS) * DRAWINGML_PERCENT_SCALE) /
+          DRAWINGML_PERCENT_SCALE;
+      } else {
+        // A single measured line cannot re-wrap, so exact point spacing is safe and
+        // reproduces the browser's line box precisely.
+        // Convert Pixel Height to Point Height (1px = 0.75pt)
+        // And apply the global layout scale.
+        lineSpacing = lhPx * 0.75 * scale;
+      }
     }
   }
 
@@ -596,6 +689,7 @@ export function getTextStyle(style, scale, includeMargins = true, inheritedOpaci
     underline: style.textDecoration.includes('underline'),
     // Only add if we have a valid value
     ...(lineSpacing && { lineSpacing }),
+    ...(lineSpacingMultiple && { lineSpacingMultiple }),
     ...(paraSpaceBefore > 0 && { paraSpaceBefore }),
     ...(paraSpaceAfter > 0 && { paraSpaceAfter }),
     // Map background color to highlight if present

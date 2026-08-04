@@ -25,6 +25,9 @@ import {
   getBorderInfo,
   generateCompositeBorderSVG,
   isClippedByParent,
+  textWraps,
+  textWrapOptions,
+  withNoWrapWidthSlack,
   generateCustomShapeSVG,
   getUsedFontFamilies,
   getAutoDetectedFonts,
@@ -1179,15 +1182,14 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
           // Honor CSS white-space: a `nowrap`/`pre` element must not re-wrap in
           // the exported slide (otherwise a single line measured in the browser
           // can wrap in PowerPoint/LibreOffice due to font-metric differences).
-          options: {
+          options: withNoWrapWidthSlack({
             x,
             y,
             w: unrotatedW,
             h: unrotatedH,
             margin: 0,
-            autoFit: true,
-            wrap: !(style.whiteSpace === 'nowrap' || style.whiteSpace === 'pre'),
-          },
+            ...textWrapOptions(style),
+          }),
         },
       ],
       stopRecursion: false,
@@ -1326,12 +1328,12 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
     const ulPaddingBottom = parseFloat(style.paddingBottom) || 0;
     const ulPaddingLeft = parseFloat(style.paddingLeft) || 0;
 
-    // Convert to inches for PPTX margin array: [top, right, bottom, left]
+    // PptxGenJS consumes the margin array as [lIns, rIns, bIns, tIns], in points
     const listMargin = [
-      ulPaddingTop * PX_TO_INCH * config.scale * 72,
+      ulPaddingLeft * PX_TO_INCH * config.scale * 72,
       ulPaddingRight * PX_TO_INCH * config.scale * 72,
       ulPaddingBottom * PX_TO_INCH * config.scale * 72,
-      ulPaddingLeft * PX_TO_INCH * config.scale * 72,
+      ulPaddingTop * PX_TO_INCH * config.scale * 72,
     ];
 
     liChildren.forEach((child, index) => {
@@ -1518,20 +1520,19 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
         zIndex: parentSortKey.concat([0, -1]),
         domOrder,
         textParts: listItems,
-        options: {
+        options: withNoWrapWidthSlack({
           x,
           y,
           w,
           h,
           align: 'left',
           valign: 'top',
-          // Apply CSS padding as PPTX text box inset margin [top, right, bottom, left] in points
+          // CSS padding applied as PPTX text box insets, in points
           margin: listMargin,
-          autoFit: true,
-          wrap: !(style.whiteSpace === 'nowrap' || style.whiteSpace === 'pre'),
+          ...textWrapOptions(style),
           vert: writingModeVert,
           ...(writingModeVert && { textDirection: mapVertToTextDirection(writingModeVert) }),
-        },
+        }),
       });
 
       return { items, stopRecursion: true };
@@ -1765,16 +1766,21 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
 
       if (isVertical) {
         textParts.forEach((p) => {
-          if (p.options) delete p.options.lineSpacing;
+          if (p.options) {
+            delete p.options.lineSpacing;
+            delete p.options.lineSpacingMultiple;
+          }
         });
       }
 
       const padding = getPadding(style, config.scale);
+      // getPadding returns [top, right, bottom, left]; PptxGenJS consumes the margin
+      // array as [lIns, rIns, bIns, tIns], in points
       const margin = [
-        padding[3] * 72, // top
+        padding[3] * 72, // left
         padding[1] * 72, // right
         padding[2] * 72, // bottom
-        padding[0] * 72, // left
+        padding[0] * 72, // top
       ];
 
       textPayload = { text: textParts, align, valign, margin };
@@ -1858,7 +1864,7 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
         zIndex: parentSortKey.concat([0, -1]),
         domOrder,
         textParts: textPayload.text,
-        options: {
+        options: withNoWrapWidthSlack({
           x,
           y,
           w,
@@ -1867,11 +1873,10 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
           valign: textPayload.valign,
           rotate: rotation,
           margin: textPayload.margin,
-          wrap: !(style.whiteSpace === 'nowrap' || style.whiteSpace === 'pre'),
-          autoFit: true,
+          ...textWrapOptions(style),
           vert: writingModeVert,
           ...(writingModeVert && { textDirection: mapVertToTextDirection(writingModeVert) }),
-        },
+        }),
       });
     }
     if (hasCompositeBorder) {
@@ -1954,17 +1959,36 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
       }
 
       if (textPayload) {
+        // A box that draws something - fill, border, or shadow - must keep the exact size the
+        // browser measured, so its no-wrap text cannot take width slack while it sits inside the
+        // shape. Emit the shape at its measured size and put the text in a separate, invisible
+        // box that is free to widen. Leaving the text inside is not enough for renderers with no
+        // no-wrap concept: Google Slides wraps at shape width minus insets, and shrinks a
+        // round-rect's text area by its corner radius on top of that.
+        const isVisibleShape = Boolean(useSolidFill || hasUniformBorder || hasShadow);
+        const splitNoWrapText = isVisibleShape && !textWraps(style) && !rotation && !writingModeVert;
+
+        if (splitNoWrapText) {
+          items.push({
+            type: 'shape',
+            zIndex: parentSortKey.concat([-Infinity]),
+            domOrder,
+            shapeType,
+            options: shapeOpts,
+          });
+        }
+
         const textOptions = {
-          shape: shapeType,
-          ...shapeOpts,
+          ...(splitNoWrapText ? {} : { shape: shapeType, ...shapeOpts }),
+          x,
+          y,
           w,
           h,
           rotate: rotation,
           align: textPayload.align,
           valign: textPayload.valign,
           margin: textPayload.margin,
-          wrap: !(style.whiteSpace === 'nowrap' || style.whiteSpace === 'pre'),
-          autoFit: true,
+          ...textWrapOptions(style),
           vert: writingModeVert,
           ...(writingModeVert && { textDirection: mapVertToTextDirection(writingModeVert) }),
         };
@@ -1973,7 +1997,9 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
           zIndex: parentSortKey.concat([0, -1]),
           domOrder,
           textParts: textPayload.text,
-          options: textOptions,
+          // A no-op for the visible-shape-carrying-its-own-text case, which the helper
+          // guards off: that shape either wraps, is rotated, or is vertical.
+          options: withNoWrapWidthSlack(textOptions),
         });
       } else if (!hasPartialBorderRadius || customShapeName) {
         items.push({

@@ -188,6 +188,47 @@ export function textWrapOptions(style) {
   return { wrap, fit: wrap ? 'shrink' : 'none' };
 }
 
+// Extra width a no-wrap line may need when another renderer's font metrics run wider
+// than the browser's. 6% covers the glyph-advance drift measured between Arial and
+// its usual metric-compatible substitutes; the absolute floor keeps small labels,
+// where 6% is a fraction of a character, from getting effectively nothing.
+const NO_WRAP_SLACK_RATIO = 0.06;
+const NO_WRAP_SLACK_MIN_IN = 0.02;
+
+function noWrapSlackIn(widthIn) {
+  return Math.max(widthIn * NO_WRAP_SLACK_RATIO, NO_WRAP_SLACK_MIN_IN);
+}
+
+/**
+ * Adds horizontal slack to a no-wrap text box so its single line survives a renderer
+ * with wider font metrics. Returns `options` untouched when it does not apply.
+ *
+ * Text boxes are exported at the exact pixel width the browser measured, and Google
+ * Slides has no "don't wrap" text property at all - imported text always wraps at the
+ * shape width - so a substituted font that is a fraction of a percent wider re-breaks
+ * a label that was measured as one line. Widening the box absorbs that drift, and `x`
+ * shifts with the alignment so the rendered text keeps its visual anchor.
+ *
+ * Only no-wrap boxes are widened. Wrapping text must stay inside its browser-measured
+ * rectangle: widening it would consume an authored inset or push the box past its
+ * containing boundary, and it does not need the slack anyway - it is allowed to wrap.
+ * Rotated and vertical-writing boxes are left alone too, since their layout does not
+ * grow along `w`.
+ *
+ * Callers must not apply this to a box that also draws a fill, border, or shadow:
+ * widening it would stretch the visible shape.
+ */
+export function withNoWrapWidthSlack(options) {
+  if (options.wrap !== false || options.vert || options.rotate || !(options.w > 0)) {
+    return options;
+  }
+  const slack = noWrapSlackIn(options.w);
+  // Keep the text anchored where it was measured: a left-anchored box grows to the
+  // right, a centered one grows evenly, a right-anchored one grows to the left.
+  const anchorShift = options.align === 'right' ? slack : options.align === 'center' ? slack / 2 : 0;
+  return { ...options, x: options.x - anchorShift, w: options.w + slack };
+}
+
 // Checks if any parent element has overflow: hidden which would clip this element
 export function isClippedByParent(node) {
   let parent = node.parentElement;

@@ -25,7 +25,9 @@ import {
   getBorderInfo,
   generateCompositeBorderSVG,
   isClippedByParent,
+  textWraps,
   textWrapOptions,
+  withNoWrapWidthSlack,
   generateCustomShapeSVG,
   getUsedFontFamilies,
   getAutoDetectedFonts,
@@ -1180,14 +1182,14 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
           // Honor CSS white-space: a `nowrap`/`pre` element must not re-wrap in
           // the exported slide (otherwise a single line measured in the browser
           // can wrap in PowerPoint/LibreOffice due to font-metric differences).
-          options: {
+          options: withNoWrapWidthSlack({
             x,
             y,
             w: unrotatedW,
             h: unrotatedH,
             margin: 0,
             ...textWrapOptions(style),
-          },
+          }),
         },
       ],
       stopRecursion: false,
@@ -1518,7 +1520,7 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
         zIndex: parentSortKey.concat([0, -1]),
         domOrder,
         textParts: listItems,
-        options: {
+        options: withNoWrapWidthSlack({
           x,
           y,
           w,
@@ -1530,7 +1532,7 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
           ...textWrapOptions(style),
           vert: writingModeVert,
           ...(writingModeVert && { textDirection: mapVertToTextDirection(writingModeVert) }),
-        },
+        }),
       });
 
       return { items, stopRecursion: true };
@@ -1859,7 +1861,7 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
         zIndex: parentSortKey.concat([0, -1]),
         domOrder,
         textParts: textPayload.text,
-        options: {
+        options: withNoWrapWidthSlack({
           x,
           y,
           w,
@@ -1871,7 +1873,7 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
           ...textWrapOptions(style),
           vert: writingModeVert,
           ...(writingModeVert && { textDirection: mapVertToTextDirection(writingModeVert) }),
-        },
+        }),
       });
     }
     if (hasCompositeBorder) {
@@ -1954,9 +1956,29 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
       }
 
       if (textPayload) {
+        // A box that draws something - fill, border, or shadow - must keep the exact size the
+        // browser measured, so its no-wrap text cannot take width slack while it sits inside the
+        // shape. Emit the shape at its measured size and put the text in a separate, invisible
+        // box that is free to widen. Leaving the text inside is not enough for renderers with no
+        // no-wrap concept: Google Slides wraps at shape width minus insets, and shrinks a
+        // round-rect's text area by its corner radius on top of that.
+        const isVisibleShape = Boolean(useSolidFill || hasUniformBorder || hasShadow);
+        const splitNoWrapText = isVisibleShape && !textWraps(style) && !rotation && !writingModeVert;
+
+        if (splitNoWrapText) {
+          items.push({
+            type: 'shape',
+            zIndex: parentSortKey.concat([-Infinity]),
+            domOrder,
+            shapeType,
+            options: shapeOpts,
+          });
+        }
+
         const textOptions = {
-          shape: shapeType,
-          ...shapeOpts,
+          ...(splitNoWrapText ? {} : { shape: shapeType, ...shapeOpts }),
+          x,
+          y,
           w,
           h,
           rotate: rotation,
@@ -1972,7 +1994,9 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
           zIndex: parentSortKey.concat([0, -1]),
           domOrder,
           textParts: textPayload.text,
-          options: textOptions,
+          // A no-op for the visible-shape-carrying-its-own-text case, which the helper
+          // guards off: that shape either wraps, is rotated, or is vertical.
+          options: withNoWrapWidthSlack(textOptions),
         });
       } else if (!hasPartialBorderRadius || customShapeName) {
         items.push({

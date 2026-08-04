@@ -165,6 +165,29 @@ export function textWraps(style) {
   return !(style.whiteSpace === 'nowrap' || style.whiteSpace === 'pre');
 }
 
+/**
+ * The wrap and autofit options for a text box, derived from its computed CSS
+ * `white-space`. Spread into a PptxGenJS text options object.
+ *
+ * Wrapping boxes get `fit: 'shrink'` (`<a:normAutofit/>`): a renderer whose glyph
+ * metrics run wider than the browser's re-wraps the paragraph into an extra line,
+ * and shrink-to-fit keeps that line inside the box instead of spilling it over the
+ * content below. The alternative, `<a:spAutoFit/>`, grows the box instead - and
+ * LibreOffice's spAutoFit re-layout even ignores `wrap="none"`.
+ *
+ * No-wrap boxes get `fit: 'none'` (no autofit element at all): their single
+ * browser-measured line has nothing to fit.
+ *
+ * Known limitation: a bare `<a:normAutofit/>` carries no fontScale, and desktop
+ * PowerPoint only computes one when the shape is next edited
+ * (https://github.com/gitbrent/PptxGenJS/issues/544), so the shrink is a backstop
+ * rather than a guarantee there.
+ */
+export function textWrapOptions(style) {
+  const wrap = textWraps(style);
+  return { wrap, fit: wrap ? 'shrink' : 'none' };
+}
+
 // Checks if any parent element has overflow: hidden which would clip this element
 export function isClippedByParent(node) {
   let parent = node.parentElement;

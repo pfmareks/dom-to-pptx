@@ -153,6 +153,18 @@ export function extractTableData(node, scale) {
   return { rows, colWidths };
 }
 
+/**
+ * Whether text in an element may re-wrap in the exported slide, from its computed
+ * CSS `white-space`.
+ *
+ * `nowrap` and `pre` elements were measured by the browser as a single line, so the
+ * export must keep them on one line (`wrap: false` -> `wrap="none"`); every other
+ * `white-space` value soft-wraps and keeps wrapping in the slide.
+ */
+export function textWraps(style) {
+  return !(style.whiteSpace === 'nowrap' || style.whiteSpace === 'pre');
+}
+
 // Checks if any parent element has overflow: hidden which would clip this element
 export function isClippedByParent(node) {
   let parent = node.parentElement;

@@ -4,10 +4,12 @@ import { exportToPptx } from '../index.js';
 
 // Mock pptxgenjs
 const mockAddText = vi.fn();
+const mockAddShape = vi.fn();
+const mockAddImage = vi.fn();
 const mockAddSlide = vi.fn(() => ({
   addText: mockAddText,
-  addShape: vi.fn(),
-  addImage: vi.fn(),
+  addShape: mockAddShape,
+  addImage: mockAddImage,
   addTable: vi.fn(),
 }));
 
@@ -24,6 +26,11 @@ vi.mock('pptxgenjs', () => {
     }),
   };
 });
+
+// Images are processed through a canvas, which JSDOM cannot do - stub the processor.
+vi.mock('../image-processor.js', () => ({
+  getProcessedImage: vi.fn(() => Promise.resolve('data:image/png;base64,AAAA')),
+}));
 
 describe('Bug 2: Inline styled badges keep highlight', () => {
   beforeAll(() => {
@@ -105,6 +112,94 @@ describe('Bug 3: No duplicate rendering of inline elements', () => {
     });
 
     expect(pmaCalls.length).toBe(0);
+
+    document.body.removeChild(container);
+  });
+});
+
+describe('Bug 4: Wrapper background behind a letterboxed image', () => {
+  const buildTile = (imgStyle) => {
+    const container = document.createElement('div');
+    container.className = 'slide';
+    container.style.width = '960px';
+    container.style.height = '540px';
+
+    // Landscape tile with a white rounded background, holding an absolutely
+    // positioned square photo. The tile rect is 400x200 at (40, 40).
+    const tile = document.createElement('div');
+    tile.style.position = 'relative';
+    tile.style.borderRadius = '20px';
+    tile.style.overflow = 'hidden';
+    tile.style.background = '#ffffff';
+
+    const img = document.createElement('img');
+    img.setAttribute('src', 'https://example.com/photo.png');
+    img.style.position = 'absolute';
+    img.style.inset = '0';
+    img.style.width = '100%';
+    img.style.height = '100%';
+    img.style.boxSizing = 'border-box';
+    img.style.cssText += imgStyle;
+
+    tile.appendChild(img);
+    container.appendChild(tile);
+    document.body.appendChild(container);
+
+    const rect = (left, top, width, height) => () => ({
+      x: left,
+      y: top,
+      left,
+      top,
+      width,
+      height,
+      right: left + width,
+      bottom: top + height,
+    });
+
+    container.getBoundingClientRect = rect(0, 0, 960, 540);
+    tile.getBoundingClientRect = rect(40, 40, 400, 200);
+    img.getBoundingClientRect = rect(40, 40, 400, 200);
+
+    return { container, tile, img };
+  };
+
+  const backingShapes = () =>
+    mockAddShape.mock.calls.filter(([shapeType, options]) => shapeType === 'roundRect' && options?.fill);
+
+  it('emits a roundRect backing shape when the image does not cover the tile', async () => {
+    mockAddShape.mockClear();
+    mockAddImage.mockClear();
+
+    const { container } = buildTile('object-fit: contain; padding: 20px;');
+
+    await exportToPptx(container, { skipDownload: true, skipNormalize: true });
+
+    const shapes = backingShapes();
+    expect(shapes.length).toBe(1);
+
+    const [, options] = shapes[0];
+    expect(options.fill.color).toBe('FFFFFF');
+    // 96 DPI, root is exactly 960x540 px so the export scale is 1:1.
+    expect(options.x).toBeCloseTo(40 / 96, 5);
+    expect(options.y).toBeCloseTo(40 / 96, 5);
+    expect(options.w).toBeCloseTo(400 / 96, 5);
+    expect(options.h).toBeCloseTo(200 / 96, 5);
+    expect(options.rectRadius).toBeCloseTo(20 / 96, 5);
+
+    // The photo is still exported on top of the backing shape.
+    expect(mockAddImage).toHaveBeenCalled();
+
+    document.body.removeChild(container);
+  });
+
+  it('still skips the backing shape when the image fully covers the tile', async () => {
+    mockAddShape.mockClear();
+
+    const { container } = buildTile('object-fit: cover;');
+
+    await exportToPptx(container, { skipDownload: true, skipNormalize: true });
+
+    expect(backingShapes().length).toBe(0);
 
     document.body.removeChild(container);
   });

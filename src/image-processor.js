@@ -1,6 +1,14 @@
 // src/image-processor.js
 
-export async function getProcessedImage(src, targetW, targetH, radius, objectFit = 'fill', objectPosition = '50% 50%') {
+export async function getProcessedImage(
+  src,
+  targetW,
+  targetH,
+  radius,
+  objectFit = 'fill',
+  objectPosition = '50% 50%',
+  padding = null
+) {
   return new Promise((resolve) => {
     const img = new Image();
     img.crossOrigin = 'Anonymous';
@@ -55,8 +63,14 @@ export async function getProcessedImage(src, targetW, targetH, radius, objectFit
       ctx.globalCompositeOperation = 'source-in';
 
       // 3. Draw Image with Object Fit logic
-      const wRatio = targetW / img.width;
-      const hRatio = targetH / img.height;
+      // Object fit is resolved against the *content* box: CSS padding insets the drawn
+      // image while the mask above still follows the border box.
+      const pad = { top: 0, right: 0, bottom: 0, left: 0, ...(padding || {}) };
+      const boxW = Math.max(0, targetW - pad.left - pad.right);
+      const boxH = Math.max(0, targetH - pad.top - pad.bottom);
+
+      const wRatio = boxW / img.width;
+      const hRatio = boxH / img.height;
       let renderW, renderH;
 
       if (objectFit === 'contain') {
@@ -76,8 +90,8 @@ export async function getProcessedImage(src, targetW, targetH, radius, objectFit
         renderH = img.height * scaleDown;
       } else {
         // 'fill' (default)
-        renderW = targetW;
-        renderH = targetH;
+        renderW = boxW;
+        renderH = boxH;
       }
 
       // Handle Object Position (simplified parsing for "x% y%" or keywords)
@@ -97,8 +111,8 @@ export async function getProcessedImage(src, targetW, targetH, radius, objectFit
         posY = posParts.length > 1 ? parsePos(posParts[1]) : 0.5;
       }
 
-      const renderX = (targetW - renderW) * posX;
-      const renderY = (targetH - renderH) * posY;
+      const renderX = pad.left + (boxW - renderW) * posX;
+      const renderY = pad.top + (boxH - renderH) * posY;
 
       ctx.drawImage(img, renderX, renderY, renderW, renderH);
 

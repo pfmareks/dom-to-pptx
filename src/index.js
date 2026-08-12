@@ -778,6 +778,33 @@ function isIconElement(node) {
   return false;
 }
 
+// CSS padding of an element, in px, as {top, right, bottom, left}.
+// Padding always insets the content box from the border box (the rect we export
+// against), regardless of `box-sizing`.
+function getElementPadding(style) {
+  return {
+    top: parseFloat(style.paddingTop) || 0,
+    right: parseFloat(style.paddingRight) || 0,
+    bottom: parseFloat(style.paddingBottom) || 0,
+    left: parseFloat(style.paddingLeft) || 0,
+  };
+}
+
+// True when an <img> paints over its entire border box, so whatever sits behind it
+// (its wrapper's background) can never show through. `contain`, `scale-down` and
+// `none` letterbox the photo, and padding shrinks the content box - in both cases
+// the wrapper's background stays visible and must be exported as a backing shape.
+function imagePaintsFullBox(imgNode) {
+  const imgStyle = window.getComputedStyle(imgNode);
+  const fit = imgStyle.objectFit || 'fill';
+  if (fit !== 'fill' && fit !== 'cover') return false;
+
+  const pad = getElementPadding(imgStyle);
+  if (pad.top > 0 || pad.right > 0 || pad.bottom > 0 || pad.left > 0) return false;
+
+  return true;
+}
+
 function getNodeSelector(node) {
   if (!node) return 'unknown';
   if (node.id) return `#${node.id}`;
@@ -1619,8 +1646,18 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
       options: { x, y, w, h, rotate: rotation, data: null },
     };
 
+    const imgPadding = getElementPadding(style);
+
     const job = async () => {
-      const processed = await getProcessedImage(node.src, widthPx, heightPx, radii, objectFit, objectPosition);
+      const processed = await getProcessedImage(
+        node.src,
+        widthPx,
+        heightPx,
+        radii,
+        objectFit,
+        objectPosition,
+        imgPadding
+      );
       if (processed) item.options.data = processed;
       else item.skip = true;
     };
@@ -1727,7 +1764,12 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
   if (imgChild) {
     const childW = imgChild.offsetWidth || imgChild.getBoundingClientRect().width;
     const childH = imgChild.offsetHeight || imgChild.getBoundingClientRect().height;
-    if (childW >= widthPx - 2 && childH >= heightPx - 2) isImageWrapper = true;
+    // The wrapper's own background may only be skipped when the child image really
+    // paints over the whole box. A `contain`/`scale-down`/`none` fit or CSS padding
+    // leaves bars of the wrapper's background visible, so the backing shape is required.
+    if (childW >= widthPx - 2 && childH >= heightPx - 2 && imagePaintsFullBox(imgChild)) {
+      isImageWrapper = true;
+    }
   }
 
   let textPayload = null;

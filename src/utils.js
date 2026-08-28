@@ -7,6 +7,15 @@ function getCtx() {
   return _ctx;
 }
 
+function getCachedComputedStyle(node, cache) {
+  if (!cache) return window.getComputedStyle(node);
+  const cached = cache.get(node);
+  if (cached) return cached;
+  const style = window.getComputedStyle(node);
+  cache.set(node, style);
+  return style;
+}
+
 function getTableBorder(style, side, scale, node) {
   const widthStr = style[`border${side}Width`];
   const styleStr = style[`border${side}Style`];
@@ -35,7 +44,7 @@ function getTableBorder(style, side, scale, node) {
 /**
  * Extracts native table data for PptxGenJS.
  */
-export function extractTableData(node, scale) {
+export function extractTableData(node, scale, computedStyleCache) {
   const rows = [];
   const colWidths = [];
 
@@ -56,7 +65,7 @@ export function extractTableData(node, scale) {
     });
   }
 
-  const tableStyle = window.getComputedStyle(node);
+  const tableStyle = getCachedComputedStyle(node, computedStyleCache);
   const borderSpacing = tableStyle.borderSpacing.split(' ');
   const hSpace = parseFloat(borderSpacing[0]) || 0;
   const vSpace = parseFloat(borderSpacing[1] || borderSpacing[0]) || 0;
@@ -70,8 +79,8 @@ export function extractTableData(node, scale) {
     const cellList = Array.from(tr.children).filter((c) => ['td', 'th'].includes((c?.tagName || '').toLowerCase()));
 
     cellList.forEach((cell) => {
-      const style = window.getComputedStyle(cell);
-      const cellParts = collectTextParts(cell, style, scale);
+      const style = getCachedComputedStyle(cell, computedStyleCache);
+      const cellParts = collectTextParts(cell, style, scale, null, true, 1, computedStyleCache);
       // Fallback to plain text if collectTextParts returns empty/invalid
       const cellText = cellParts && cellParts.length > 0 ? cellParts : cell.innerText.replace(/[\n\r\t]+/g, ' ').trim();
 
@@ -707,7 +716,7 @@ export function getTextStyle(style, scale, includeMargins = true, inheritedOpaci
  * Determines if a given DOM node is primarily a text container.
  * Updated to correctly reject Icon elements so they are rendered as images.
  */
-export function isTextContainer(node) {
+export function isTextContainer(node, computedStyleCache) {
   const hasText = node.textContent.trim().length > 0;
   if (!hasText) return false;
 
@@ -742,14 +751,16 @@ export function isTextContainer(node) {
       }
     }
 
-    const style = window.getComputedStyle(el);
+    const style = getCachedComputedStyle(el, computedStyleCache);
     const display = style.display;
 
     // Reject block displays and flex/grid items
     const isBlockDisplay = display === 'block' || display === 'flex' || display === 'grid' || display === 'table';
     if (isBlockDisplay) return false;
 
-    const parentStyle = el.parentElement ? window.getComputedStyle(el.parentElement) : null;
+    const parentStyle = el.parentElement
+      ? getCachedComputedStyle(el.parentElement, computedStyleCache)
+      : null;
     const parentDisplay = parentStyle ? parentStyle.display : '';
     const isFlexOrGridItem = parentDisplay.includes('flex') || parentDisplay.includes('grid');
     if (isFlexOrGridItem) return false;
@@ -1159,13 +1170,13 @@ export function generateBlurredSVG(w, h, color, radius, blurPx) {
 /**
  * Traverses the target DOM and collects all unique font-family names used.
  */
-export function getUsedFontFamilies(root) {
+export function getUsedFontFamilies(root, computedStyleCache) {
   const families = new Set();
 
   function scan(node) {
     if (node.nodeType === 1) {
       // Element
-      const style = window.getComputedStyle(node);
+      const style = getCachedComputedStyle(node, computedStyleCache);
       const fontList = style.fontFamily.split(',');
       // The first font in the stack is the primary one
       const primary = fontList[0].trim().replace(/['"]/g, '');
@@ -1533,7 +1544,8 @@ export function collectTextParts(
   scale,
   activeHyperlink = null,
   isRoot = true,
-  inheritedOpacity = 1
+  inheritedOpacity = 1,
+  computedStyleCache
 ) {
   const parts = [];
   let hyperlink = activeHyperlink;
@@ -1585,7 +1597,7 @@ export function collectTextParts(
       // breaks (and, except pre-line, runs of spaces). Without this, every newline
       // and indent inside a <pre> / white-space:pre(-wrap) block is collapsed to a
       // single space and multi-line content renders as one run.
-      const wsStyle = node.nodeType === 1 ? window.getComputedStyle(node) : parentStyle;
+      const wsStyle = node.nodeType === 1 ? getCachedComputedStyle(node, computedStyleCache) : parentStyle;
       const whiteSpace = wsStyle.whiteSpace || 'normal';
       if (whiteSpace === 'pre' || whiteSpace === 'pre-wrap' || whiteSpace === 'pre-line') {
         const segs = splitPreformattedText(child.nodeValue, whiteSpace, {
@@ -1629,7 +1641,7 @@ export function collectTextParts(
 
       if (val) {
         // Use parent style if child is text node, otherwise current style
-        const styleToUse = node.nodeType === 1 ? window.getComputedStyle(node) : parentStyle;
+        const styleToUse = node.nodeType === 1 ? getCachedComputedStyle(node, computedStyleCache) : parentStyle;
         const transform = styleToUse.textTransform;
         if (transform === 'uppercase') val = val.toUpperCase();
         else if (transform === 'lowercase') val = val.toLowerCase();
@@ -1678,7 +1690,15 @@ export function collectTextParts(
           parts.push({ text: '', options: { breakLine: true } });
         }
 
-        const childParts = collectTextParts(child, parentStyle, scale, hyperlink, false, inheritedOpacity);
+        const childParts = collectTextParts(
+          child,
+          parentStyle,
+          scale,
+          hyperlink,
+          false,
+          inheritedOpacity,
+          computedStyleCache,
+        );
         if (childParts.length > 0) parts.push(...childParts);
 
         if (isBlock) {

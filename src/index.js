@@ -118,6 +118,10 @@ export async function exportToPptx(target, options = {}) {
     ...options,
     _slideWidth: finalWidth,
     _slideHeight: finalHeight,
+    // Text-container classification is independent of the slide item being built. Cache it for
+    // this export because the traversal asks about the same parents repeatedly.
+    _textContainerCache: new WeakMap(),
+    _computedStyleCache: new WeakMap(),
   };
 
   const elements = Array.isArray(target) ? target : [target];
@@ -194,7 +198,7 @@ export async function exportToPptx(target, options = {}) {
 
   if (options.autoEmbedFonts !== false) {
     // A. Scan DOM for used font families
-    const usedFamilies = getUsedFontFamilies(elements);
+    const usedFamilies = getUsedFontFamilies(elements, extendedOptions._computedStyleCache);
 
     // B. Scan CSS for URLs matches (each carries weight+style now)
     const detectedFonts = await getAutoDetectedFonts(usedFamilies);
@@ -368,6 +372,21 @@ export async function exportToPptx(target, options = {}) {
  * @param {PptxGenJS.Slide} slide - The PPTX slide object to add content to.
  * @param {PptxGenJS} pptx - The main PPTX instance.
  */
+function getComputedStyleCached(node, cache) {
+  if (!cache) return window.getComputedStyle(node);
+  const cached = cache.get(node);
+  if (cached) return cached;
+  const style = window.getComputedStyle(node);
+  cache.set(node, style);
+  return style;
+}
+
+function isTextContainerCached(node, cache, computedStyleCache) {
+  if (!cache) return isTextContainer(node, computedStyleCache);
+  if (!cache.has(node)) cache.set(node, isTextContainer(node, computedStyleCache));
+  return cache.get(node);
+}
+
 function compareKeys(keyA, keyB) {
   const len = Math.max(keyA.length, keyB.length);
   for (let i = 0; i < len; i++) {
@@ -430,7 +449,7 @@ async function processSlide(root, slide, pptx, globalOptions = {}) {
     const nodeType = node.nodeType;
 
     if (nodeType === 1) {
-      nodeStyle = window.getComputedStyle(node);
+      nodeStyle = getComputedStyleCached(node, globalOptions._computedStyleCache);
       const elOpacity = parseFloat(nodeStyle.opacity);
       if (!isNaN(elOpacity)) {
         currentOpacity *= elOpacity;
@@ -1119,10 +1138,10 @@ function preparePseudoElementItem(node, pseudoType, hostRect, config, zIndex, do
   return { item: canvasItem, job: canvasJob };
 }
 
-function countParagraphs(node, scale) {
+function countParagraphs(node, scale, computedStyleCache) {
   if (!node) return 1;
-  const style = window.getComputedStyle(node);
-  const parts = collectTextParts(node, style, scale, null, true, 1);
+  const style = getComputedStyleCached(node, computedStyleCache);
+  const parts = collectTextParts(node, style, scale, null, true, 1, computedStyleCache);
   let count = 1;
   for (const part of parts) {
     if (part.options?.breakLine) {
@@ -1141,14 +1160,14 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
     const parent = node.parentElement;
     if (!parent) return null;
 
-    if (isTextContainer(parent)) return null; // Parent handles it
+    if (isTextContainerCached(parent, globalOptions._textContainerCache, globalOptions._computedStyleCache)) return null; // Parent handles it
 
     const range = document.createRange();
     range.selectNode(node);
     const rect = range.getBoundingClientRect();
     range.detach();
 
-    const style = window.getComputedStyle(parent);
+    const style = getComputedStyleCached(parent, globalOptions._computedStyleCache);
     const widthPx = rect.width;
     const heightPx = rect.height;
     const unrotatedW = widthPx * PX_TO_INCH * config.scale;
@@ -1203,7 +1222,9 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
   // We should not render a separate shape/text box for it.
   let ancestor = node.parentElement;
   while (ancestor) {
-    if (isTextContainer(ancestor)) {
+    if (
+      isTextContainerCached(ancestor, globalOptions._textContainerCache, globalOptions._computedStyleCache)
+    ) {
       return null;
     }
     ancestor = ancestor.parentElement;
@@ -1218,8 +1239,8 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
     anim || (globalOptions._inheritedAnimation ? { ...globalOptions._inheritedAnimation, start: 'with' } : null);
   if (effectiveAnim) {
     let numParagraphs = 1;
-    if (isTextContainer(node)) {
-      numParagraphs = countParagraphs(node, config.scale);
+    if (isTextContainerCached(node, globalOptions._textContainerCache, globalOptions._computedStyleCache)) {
+      numParagraphs = countParagraphs(node, config.scale, globalOptions._computedStyleCache);
     }
     globalOptions._animations = globalOptions._animations || [];
     globalOptions._animations.push({
@@ -1263,7 +1284,7 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
     style.getPropertyValue('--pptx-shape');
 
   if ((node?.tagName || '').toLowerCase() === 'table') {
-    const tableData = extractTableData(node, config.scale);
+    const tableData = extractTableData(node, config.scale, globalOptions._computedStyleCache);
     const tableItems = [
       {
         type: 'table',
@@ -1337,7 +1358,7 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
     ];
 
     liChildren.forEach((child, index) => {
-      const liStyle = window.getComputedStyle(child);
+      const liStyle = getComputedStyleCached(child, globalOptions._computedStyleCache);
       const liRect = child.getBoundingClientRect();
       const parentRect = node.getBoundingClientRect(); // node is UL/OL
 
@@ -1405,7 +1426,7 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
       }
 
       // 3. Extract Text Parts
-      const parts = collectTextParts(child, liStyle, config.scale);
+      const parts = collectTextParts(child, liStyle, config.scale, null, true, 1, globalOptions._computedStyleCache);
 
       if (parts.length > 0) {
         parts.forEach((p) => {
@@ -1595,7 +1616,7 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
     const hasAnyRadius = radii.tl > 0 || radii.tr > 0 || radii.br > 0 || radii.bl > 0;
     if (!hasAnyRadius) {
       const parent = node.parentElement;
-      const parentStyle = window.getComputedStyle(parent);
+      const parentStyle = getComputedStyleCached(parent, globalOptions._computedStyleCache);
       if (parentStyle.overflow !== 'visible') {
         const pRadii = {
           tl: parseFloat(parentStyle.borderTopLeftRadius) || 0,
@@ -1658,7 +1679,7 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
     borderTopLeftRadius !== borderBottomLeftRadius;
 
   const tempBg = parseColor(style.backgroundColor);
-  const isTxt = isTextContainer(node);
+  const isTxt = isTextContainerCached(node, globalOptions._textContainerCache, globalOptions._computedStyleCache);
   const hasContent = node.textContent.trim().length > 0 || node.children.length > 0;
 
   if (hasPartialBorderRadius && tempBg.hex && !isTxt && !hasContent && !customShapeName) {
@@ -1732,10 +1753,18 @@ function prepareRenderItem(node, config, domOrder, pptx, effectiveZIndex, comput
   }
 
   let textPayload = null;
-  const isText = isTextContainer(node);
+  const isText = isTextContainerCached(node, globalOptions._textContainerCache, globalOptions._computedStyleCache);
 
   if (isText) {
-    const textParts = collectTextParts(node, style, config.scale, null, true, inheritedOpacity);
+    const textParts = collectTextParts(
+      node,
+      style,
+      config.scale,
+      null,
+      true,
+      inheritedOpacity,
+      globalOptions._computedStyleCache,
+    );
 
     if (textParts.length > 0) {
       let align = style.textAlign || 'left';

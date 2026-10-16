@@ -8,9 +8,6 @@ importers:
 
   .:
     dependencies:
-      '@puppeteer/browsers':
-        specifier: ^3.0.4
-        version: 3.0.4
       fonteditor-core:
         specifier: ^2.6.3
         version: 2.6.3
@@ -29,9 +26,6 @@ importers:
       pptxgenjs:
         specifier: ^4.0.1
         version: 4.0.1
-      puppeteer:
-        specifier: ^25.1.0
-        version: 25.1.0
     devDependencies:
       '@eslint/js':
         specifier: ^10.0.1
@@ -39,6 +33,9 @@ importers:
       '@eslint/markdown':
         specifier: ^8.0.2
         version: 8.0.2
+      '@puppeteer/browsers':
+        specifier: ^3.0.4
+        version: 3.0.4
       '@rollup/plugin-commonjs':
         specifier: ^29.0.0
         version: 29.0.0(rollup@4.55.2)
@@ -75,6 +72,9 @@ importers:
       process:
         specifier: ^0.11.10
         version: 0.11.10
+      puppeteer:
+        specifier: ^25.1.0
+        version: 25.1.0
       rollup:
         specifier: ^4.18.0
         version: 4.55.2

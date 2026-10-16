@@ -83,6 +83,14 @@ Most HTML-to-PPTX libraries fail when faced with modern web design. They break o
 npm install dom-to-pptx
 ```
 
+The headless exporter (the `dom-to-pptx/node` entry and the `dom-to-pptx export` / `dom-to-pptx-exporter` CLI) runs in Puppeteer, which is an optional peer dependency. Install it next to the package to use them:
+
+```bash
+npm install dom-to-pptx puppeteer
+```
+
+`@puppeteer/browsers` is also optional. The exporter only needs it to download Chrome when it cannot find Chrome, Edge or Firefox on the system. The browser API and the prebuilt `dist/dom-to-pptx.bundle.js` do not need either package.
+
 ## 🖥️ Command Line Interface (CLI) & Agent Skills (New!)
 
 `dom-to-pptx` ships with a CLI suite to run headless PPTX exports or configure AI coding assistants.

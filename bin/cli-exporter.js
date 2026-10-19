@@ -258,6 +258,8 @@ async function runExporter(argv) {
       console.error(
         `  - If the HTML loads content dynamically, verify that the slides are fully rendered when network is idle.`
       );
+    } else if (err.message.includes('is not installed')) {
+      console.error(`  - Install the missing package next to dom-to-pptx, then run the export again.`);
     } else if (
       err.message.includes('puppeteer') ||
       err.message.includes('browser') ||

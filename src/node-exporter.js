@@ -4,6 +4,24 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 /**
+ * Load an optional peer dependency of the `dom-to-pptx/node` entry and the
+ * exporter CLI. `load` must be a literal `import()` thunk so the bundler keeps
+ * the specifier. A missing package becomes an error naming the install command.
+ *
+ * @param {string} name - Package name, used in the error message.
+ * @param {() => Promise<any>} load - Thunk that imports the package.
+ * @param {string} hint - What to install or do instead.
+ */
+async function importOptionalPeer(name, load, hint) {
+  try {
+    return await load();
+  } catch (err) {
+    if (err?.code !== 'ERR_MODULE_NOT_FOUND' && err?.code !== 'MODULE_NOT_FOUND') throw err;
+    throw new Error(`"${name}" is not installed. ${hint}`, { cause: err });
+  }
+}
+
+/**
  * Compute the browser launch args for a given Puppeteer product.
  *
  * Chrome / Chromium / Edge get:
@@ -129,7 +147,12 @@ async function ensureBrowser(puppeteer) {
   console.log('No compatible browser found. Installing headless Chrome (one-time ~150 MB)...');
   console.log('This only happens once. Subsequent runs will reuse the cached binary.\n');
 
-  const { install, Browser, resolveBuildId, detectBrowserPlatform } = await import('@puppeteer/browsers');
+  const { install, Browser, resolveBuildId, detectBrowserPlatform } = await importOptionalPeer(
+    '@puppeteer/browsers',
+    () => import('@puppeteer/browsers'),
+    'No local browser was found, and downloading one needs it: run "npm install @puppeteer/browsers", ' +
+      'or install Chrome/Edge/Firefox on this system.'
+  );
 
   const cacheDir = path.join(os.homedir(), '.cache', 'puppeteer');
   const detectedPlatform = detectBrowserPlatform();
@@ -192,7 +215,11 @@ async function ensureBrowser(puppeteer) {
  * @returns {Promise<Buffer>} - PPTX output buffer.
  */
 export async function exportHtmlToPptx(htmlSource, options = {}) {
-  const puppeteer = await import('puppeteer').then((m) => m.default || m);
+  const puppeteer = await importOptionalPeer(
+    'puppeteer',
+    () => import('puppeteer'),
+    'dom-to-pptx/node and the export CLI need it: run "npm install puppeteer".'
+  ).then((m) => m.default || m);
 
   // Resolve browser — self-managing, no external setup required
   const { executablePath, product } = await ensureBrowser(puppeteer);

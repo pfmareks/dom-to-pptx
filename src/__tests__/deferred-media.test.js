@@ -6,10 +6,12 @@ import { deferImageData, generateWithDeferredMedia } from '../deferred-media.js'
 const PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==';
 
 // A PptxGenJS-like zip with one XML part and a media entry per item of `media`: a number is that
-// parked image's placeholder, a string is written as-is. Parks `images` images in `store`.
+// parked image's placeholder, a string is written as-is. Parks `images` distinct images in `store`,
+// the first one PNG_BASE64.
 async function pptxWithMedia(store, media, images = 1) {
-  const placeholders = Array.from({ length: images }, () => {
-    const { data } = deferImageData({ data: `data:image/png;base64,${PNG_BASE64}` }, store);
+  const placeholders = Array.from({ length: images }, (_, i) => {
+    const base64 = i === 0 ? PNG_BASE64 : btoa(`image ${i}`);
+    const { data } = deferImageData({ data: `data:image/png;base64,${base64}` }, store);
     return data.slice(data.indexOf(',') + 1);
   });
   const pptx = new JSZip();

@@ -18,9 +18,14 @@ function decodeBase64(base64) {
   return bytes;
 }
 
+// Per store: parked data URL -> its index, so an image placed again reuses its placeholder.
+const storeIndexes = new WeakMap();
+
 /**
  * Returns the image options to hand PptxGenJS: unchanged unless `options.data` is a base64 raster
  * data URL, in which case the data is parked in `store` and replaced by a same-type placeholder.
+ * Identical data URLs share one parked copy and one placeholder; their media parts are merged by
+ * dedupeMedia (pptx-normalizer.js), which every export with a store runs.
  *
  * @param {Object} options - PptxGenJS addImage options.
  * @param {string[] | null} store - Per-export list of parked data URLs; null disables deferral.
@@ -31,15 +36,25 @@ export function deferImageData(options, store) {
   if (!store || typeof data !== 'string') return options;
   const prefix = data.match(BASE64_RASTER);
   if (!prefix) return options;
-  const placeholder = prefix[0] + btoa(MARKER + store.length);
-  store.push(data);
-  return { ...options, data: placeholder };
+  let indexes = storeIndexes.get(store);
+  if (!indexes) storeIndexes.set(store, (indexes = new Map()));
+  let index = indexes.get(data);
+  if (index === undefined) {
+    index = store.push(data) - 1;
+    indexes.set(data, index);
+  }
+  return { ...options, data: prefix[0] + btoa(MARKER + index) };
 }
 
 let crcTables = null;
 
-// CRC-32 (zip polynomial), eight bytes per step.
-function crc32(bytes) {
+/**
+ * CRC-32 (zip polynomial) of `bytes`, eight bytes per step.
+ *
+ * @param {Uint8Array} bytes
+ * @returns {number} Unsigned 32-bit CRC.
+ */
+export function crc32(bytes) {
   if (!crcTables) {
     crcTables = new Int32Array(256 * 8);
     for (let n = 0; n < 256; n++) {

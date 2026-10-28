@@ -1,6 +1,7 @@
 // src/pptx-normalizer.js
 import { buildTimingXml } from './animations/xml-templates.js';
 import { getTransitionXml } from './animations/transitions.js';
+import { crc32 } from './deferred-media.js';
 //
 // Defensive OOXML normalizer that runs over the PPTX produced by PptxGenJS
 // before we hand the .pptx blob to the user. Microsoft PowerPoint refuses to
@@ -48,6 +49,8 @@ const pPrOrder = [
  */
 export async function normalizePptxZip(zip, options = {}) {
   if (!zip) return;
+
+  await dedupeMedia(zip);
 
   const contentTypesFile = zip.file('[Content_Types].xml');
   if (!contentTypesFile) return;
@@ -151,6 +154,85 @@ export async function normalizePptxZip(zip, options = {}) {
         zip.file(relativePath, serialized);
       }
     }
+  }
+}
+
+// A media part directly under ppt/media/, the only place PptxGenJS writes them.
+const MEDIA_PART = /^ppt\/media\/[^/]+$/;
+const RELS_PART = /^(.*?)_rels\/[^/]*\.rels$/;
+
+/**
+ * Keeps one copy of each set of byte-identical media parts under ppt/media/ and points every
+ * relationship at the copy that is kept. PptxGenJS writes a media part per placement, so an image
+ * placed several times is otherwise stored once per placement. Only the Target attributes of the
+ * affected relationships change; every other part stays byte-identical. normalizePptxZip runs it
+ * first, which deferImageData relies on: images it parked once share a placeholder part.
+ *
+ * @param {import('jszip')} zip - JSZip instance with the loaded PPTX package.
+ * @returns {Promise<void>}
+ */
+async function dedupeMedia(zip) {
+  const media = [];
+  zip.forEach((relativePath, file) => {
+    if (!file.dir && MEDIA_PART.test(relativePath)) media.push([relativePath, file]);
+  });
+  const kept = new Map();
+  const replacedBy = new Map();
+  for (const [relativePath, file] of media) {
+    const bytes = await file.async('uint8array');
+    const key = `${relativePath.slice(relativePath.lastIndexOf('.'))}:${bytes.length}:${crc32(bytes)}`;
+    const candidates = kept.get(key) || [];
+    const original = candidates.find((candidate) => sameBytes(candidate.bytes, bytes));
+    if (original) {
+      replacedBy.set(relativePath, original.path);
+    } else {
+      candidates.push({ path: relativePath, bytes });
+      kept.set(key, candidates);
+    }
+  }
+  if (replacedBy.size === 0) return;
+
+  for (const [relativePath, file] of Object.entries(zip.files)) {
+    const owner = relativePath.match(RELS_PART);
+    if (!owner || file.dir) continue;
+    const xml = await file.async('string');
+    let changed = false;
+    const updated = xml.replace(/<Relationship\b[^>]*>/g, (relationship) => {
+      if (/\bTargetMode="External"/.test(relationship)) return relationship;
+      return relationship.replace(/\bTarget="([^"]*)"/, (attribute, target) => {
+        const original = replacedBy.get(resolvePartPath(owner[1], target));
+        if (!original) return attribute;
+        changed = true;
+        // Both parts sit in ppt/media/, so only the file name changes.
+        return `Target="${target.slice(0, target.lastIndexOf('/') + 1)}${original.slice(original.lastIndexOf('/') + 1)}"`;
+      });
+    });
+    if (changed) zip.file(relativePath, updated);
+  }
+  for (const relativePath of replacedBy.keys()) zip.remove(relativePath);
+}
+
+function sameBytes(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+// Resolves a relationship Target against the directory of the part that owns the .rels file.
+function resolvePartPath(ownerDir, target) {
+  const segments = [];
+  for (const segment of (target.startsWith('/') ? target.slice(1) : ownerDir + target).split('/')) {
+    if (segment === '..') segments.pop();
+    else if (segment !== '.' && segment !== '') segments.push(decodePathSegment(segment));
+  }
+  return segments.join('/');
+}
+
+function decodePathSegment(segment) {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
   }
 }
 

@@ -55,6 +55,48 @@ describe('normalizePptxZip', () => {
     expect(xml).not.toContain('slideMaster3.xml');
   });
 
+  it('merges byte-identical media parts and repoints every relationship that targets a removed copy', async () => {
+    const rels = (targets) =>
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      targets
+        .map(([id, target, mode = '']) => `<Relationship Id="${id}" Type="image" Target="${target}"${mode}/>`)
+        .join('') +
+      '</Relationships>';
+    const zip = new JSZip();
+    zip.file('[Content_Types].xml', buildContentTypes({ defaults: [{ ext: 'svg', contentType: 'image/svg+xml' }] }));
+    zip.file('ppt/media/image-1-1.svg', '<svg id="a"/>');
+    zip.file('ppt/media/image-1-2.svg', '<svg id="b"/>');
+    zip.file('ppt/media/image-2-1.svg', '<svg id="a"/>');
+    zip.file('ppt/media/image-2-2.png', '<svg id="a"/>');
+    zip.file('ppt/slides/slide2.xml', '<p:sld/>');
+    zip.file(
+      'ppt/slides/_rels/slide2.xml.rels',
+      rels([
+        ['rId1', '../media/image-2-1.svg'],
+        ['rId2', '/ppt/media/image-2-1.svg'],
+        ['rId3', '../media/image-2-2.png'],
+        ['rId4', 'https://example.com/image-2-1.svg', ' TargetMode="External"'],
+      ])
+    );
+    zip.file('ppt/slideLayouts/_rels/slideLayout1.xml.rels', rels([['rId1', '../media/image-1-2.svg']]));
+
+    await normalizePptxZip(zip);
+
+    const media = Object.keys(zip.files).filter((name) => name.startsWith('ppt/media/') && !zip.files[name].dir);
+    expect(media.sort()).toEqual(['ppt/media/image-1-1.svg', 'ppt/media/image-1-2.svg', 'ppt/media/image-2-2.png']);
+    expect(await zip.file('ppt/slides/_rels/slide2.xml.rels').async('string')).toBe(
+      rels([
+        ['rId1', '../media/image-1-1.svg'],
+        ['rId2', '/ppt/media/image-1-1.svg'],
+        ['rId3', '../media/image-2-2.png'],
+        ['rId4', 'https://example.com/image-2-1.svg', ' TargetMode="External"'],
+      ])
+    );
+    expect(await zip.file('ppt/slideLayouts/_rels/slideLayout1.xml.rels').async('string')).toBe(
+      rels([['rId1', '../media/image-1-2.svg']])
+    );
+  });
+
   it('preserves Default entries even when their extension has no parts in the zip', async () => {
     const zip = new JSZip();
     zip.file(

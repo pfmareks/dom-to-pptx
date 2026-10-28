@@ -15,6 +15,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 
 - **Faster Export Of Image-Heavy Decks**: PNG, JPEG and GIF media are now stored in the `.pptx` zip instead of being deflated again, which saved about 2% of file size at a large CPU cost; XML parts are still deflated. Raster image bytes no longer pass through PptxGenJS's JavaScript base64 decoding or through a second JSZip round trip, and composite border SVGs use a fixed clip-path id so identical borders share one decoded preview image. Slide XML and raster media bytes are unchanged and border SVGs differ only in that id; decks are about 2% larger.
+- **Smaller Decks With Repeated Images**: Byte-identical media parts are now stored once, with every relationship pointing at the kept copy, so an image, border SVG or SVG preview placed several times no longer adds a copy per placement. Slide XML and the decoded images are unchanged; only relationship targets and media part names differ. A real production lookbook (273 slides) shrinks by about 11%, synthetic lookbooks by 1-2%.
 - **Git Install Packaging**: Added a `prepare` script so installing this package straight from git builds `dist/`, which is git-ignored but shipped via `files`.
 
 ## [2.1.1] - 2026-07-21

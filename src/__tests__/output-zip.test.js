@@ -89,6 +89,24 @@ describe('exported package media', () => {
     expect(methods['[Content_Types].xml']).toBe(8);
   });
 
+  it('stores an image placed twice once, with both pictures pointing at it', async () => {
+    const bytes = await exportCanvases([RED_PNG, BLUE_PNG, RED_PNG]);
+
+    expect(await mediaPngs(bytes)).toEqual([RED_PNG, BLUE_PNG]);
+    const zip = await JSZip.loadAsync(bytes);
+    const slideXml = await zip.file('ppt/slides/slide1.xml').async('string');
+    const relsXml = await zip.file('ppt/slides/_rels/slide1.xml.rels').async('string');
+    const targets = Object.fromEntries(
+      Array.from(relsXml.matchAll(/Id="(rId\d+)"[^>]*Target="\.\.\/media\/([^"]+)"/g), (m) => [m[1], m[2]])
+    );
+    const pictures = await Promise.all(
+      Array.from(slideXml.matchAll(/r:embed="(rId\d+)"/g), (m) =>
+        zip.file(`ppt/media/${targets[m[1]]}`).async('base64')
+      )
+    );
+    expect(pictures).toEqual([RED_PNG, BLUE_PNG, RED_PNG]);
+  });
+
   it('keeps the image bytes when skipNormalize returns the PptxGenJS output as-is', async () => {
     const bytes = await exportCanvases([RED_PNG, BLUE_PNG], { skipNormalize: true });
 

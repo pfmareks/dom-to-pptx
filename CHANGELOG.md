@@ -14,6 +14,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **Faster Export Of Image-Heavy Decks**: PNG, JPEG and GIF media are now stored in the `.pptx` zip instead of being deflated again, which saved about 2% of file size at a large CPU cost; XML parts are still deflated. Raster image bytes no longer pass through PptxGenJS's JavaScript base64 decoding or through a second JSZip round trip, and composite border SVGs use a fixed clip-path id so identical borders share one decoded preview image. Slide content and media bytes are unchanged; decks are about 2% larger.
 - **Git Install Packaging**: Added a `prepare` script so installing this package straight from git builds `dist/`, which is git-ignored but shipped via `files`.
 
 ## [2.1.1] - 2026-07-21

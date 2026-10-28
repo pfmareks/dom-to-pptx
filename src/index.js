@@ -2,7 +2,7 @@
 import * as PptxGenJSImport from 'pptxgenjs';
 import html2canvas from 'html2canvas';
 import { PPTXEmbedFonts } from './font-embedder.js';
-import { normalizePptxZip } from './pptx-normalizer.js';
+import { normalizePptxZip, storeCompressedMedia } from './pptx-normalizer.js';
 import JSZip from 'jszip';
 
 // Normalize import
@@ -329,6 +329,7 @@ export async function exportToPptx(target, options = {}) {
     if (options.skipNormalize !== true) {
       await normalizePptxZip(zip, extendedOptions);
     }
+    storeCompressedMedia(zip);
     finalBlob = await embedder.generateBlob();
   } else {
     // No fonts to embed — still re-zip with DEFLATE and strip dangling Overrides
@@ -340,6 +341,7 @@ export async function exportToPptx(target, options = {}) {
     } else {
       const zip = await JSZip.loadAsync(initialBlob);
       await normalizePptxZip(zip, extendedOptions);
+      storeCompressedMedia(zip);
       finalBlob = await zip.generateAsync({
         type: 'blob',
         compression: 'DEFLATE',

@@ -40,9 +40,9 @@ async function exportCanvases(pngs, options = {}) {
   }
 }
 
-// Base64 content of every PNG media entry, in entry-name order.
+// Base64 content of every PNG media entry, in entry-name order; fails on any CRC mismatch.
 async function mediaPngs(bytes) {
-  const zip = await JSZip.loadAsync(bytes);
+  const zip = await JSZip.loadAsync(bytes, { checkCRC32: true });
   const names = Object.keys(zip.files)
     .filter((name) => /^ppt\/media\/.+\.png$/.test(name))
     .sort();

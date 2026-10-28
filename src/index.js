@@ -3,8 +3,7 @@ import * as PptxGenJSImport from 'pptxgenjs';
 import html2canvas from 'html2canvas';
 import { PPTXEmbedFonts } from './font-embedder.js';
 import { normalizePptxZip, storeCompressedMedia } from './pptx-normalizer.js';
-import { deferImageData, restoreDeferredMedia } from './deferred-media.js';
-import JSZip from 'jszip';
+import { deferImageData, loadWithDeferredMedia } from './deferred-media.js';
 
 // Normalize import
 const PptxGenJS = PptxGenJSImport?.default ?? PptxGenJSImport;
@@ -257,8 +256,7 @@ export async function exportToPptx(target, options = {}) {
     const initialBlob = await pptx.write({ outputType: 'blob' });
 
     // Load into Embedder
-    const zip = await JSZip.loadAsync(initialBlob);
-    await restoreDeferredMedia(zip, extendedOptions._deferredMedia);
+    const zip = await loadWithDeferredMedia(initialBlob, extendedOptions._deferredMedia);
     const embedder = new PPTXEmbedFonts();
     await embedder.loadZip(zip);
 
@@ -344,8 +342,7 @@ export async function exportToPptx(target, options = {}) {
     if (options.skipNormalize === true) {
       finalBlob = initialBlob;
     } else {
-      const zip = await JSZip.loadAsync(initialBlob);
-      await restoreDeferredMedia(zip, extendedOptions._deferredMedia);
+      const zip = await loadWithDeferredMedia(initialBlob, extendedOptions._deferredMedia);
       await normalizePptxZip(zip, extendedOptions);
       storeCompressedMedia(zip);
       finalBlob = await zip.generateAsync({

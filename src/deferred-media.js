@@ -75,17 +75,40 @@ function crc32(bytes) {
   return (crc ^ -1) >>> 0;
 }
 
-function placeholderIndex(data) {
-  if (data.length <= MARKER_BYTES.length || data.length > MARKER_BYTES.length + 16) return -1;
-  for (let i = 0; i < MARKER_BYTES.length; i++) if (data[i] !== MARKER_BYTES[i]) return -1;
-  return Number(new TextDecoder().decode(data.subarray(MARKER_BYTES.length)));
+// Returns the text after the marker in a stored entry's data, or null if it is not a placeholder.
+function placeholderSuffix(data) {
+  if (data.length <= MARKER_BYTES.length || data.length > MARKER_BYTES.length + 16) return null;
+  for (let i = 0; i < MARKER_BYTES.length; i++) if (data[i] !== MARKER_BYTES[i]) return null;
+  return new TextDecoder().decode(data.subarray(MARKER_BYTES.length));
+}
+
+// Returns the parked image index a placeholder names and records it in `restored`; throws for an
+// index that is malformed, out of range or already restored, so no image gets another's bytes.
+function claimIndex(suffix, store, restored) {
+  const index = /^\d+$/.test(suffix) ? Number(suffix) : -1;
+  if (index < 0 || index >= store.length || restored.has(index)) {
+    throw new Error(`Invalid or repeated deferred image placeholder "${MARKER}${suffix.slice(0, 16)}"`);
+  }
+  restored.add(index);
+  return index;
+}
+
+// Throws when the zip with the parked bytes restored could reach the 4 GiB that classic zip headers
+// address (0xffffffff marks ZIP64). Neither the patcher nor JSZip writes ZIP64, so offsets and sizes
+// would otherwise wrap silently. The bound counts placeholders twice, which is a few bytes each.
+function assertClassicZipSize(placeholderZipSize, store) {
+  let size = placeholderZipSize;
+  for (const dataUrl of store) size += Math.ceil(((dataUrl.length - dataUrl.indexOf(',') - 1) * 3) / 4);
+  if (size >= 0xffffffff) {
+    throw new Error(`The exported deck would be about ${size} bytes, over the 4 GiB limit of a .pptx zip`);
+  }
 }
 
 // Rewrites a zip with each stored placeholder entry's data replaced by the parked image bytes and
 // its CRC and sizes updated; every other header field is copied as-is, so the result is the zip
-// JSZip would have written with the real bytes. Returns null (or throws on a truncated zip) for any
-// layout other than the plain, contiguous zip JSZip writes, or when a parked image has no stored
-// placeholder entry.
+// JSZip would have written with the real bytes. Returns null (or throws on a truncated zip or an
+// invalid placeholder) for any layout other than the plain, contiguous zip JSZip writes, or when a
+// parked image has no stored placeholder entry.
 function patchPlaceholders(buf, store, type) {
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const eocd = buf.length - 22;
@@ -97,7 +120,7 @@ function patchPlaceholders(buf, store, type) {
 
   const localParts = [];
   const centralParts = [];
-  const restored = [];
+  const restored = new Set();
   let expectedLocal = 0;
   let newOffset = 0;
   let cd = cdOffset;
@@ -114,10 +137,9 @@ function patchPlaceholders(buf, store, type) {
     let data = buf.subarray(dataStart, dataStart + compressedSize);
     const localHeader = buf.slice(local, dataStart);
     const centralHeader = buf.slice(cd, cd + cdLength);
-    const index = method === 0 ? placeholderIndex(data) : -1;
-    if (index >= 0 && store[index]) {
-      const dataUrl = store[index];
-      restored.push(index);
+    const suffix = method === 0 ? placeholderSuffix(data) : null;
+    if (suffix !== null) {
+      const dataUrl = store[claimIndex(suffix, store, restored)];
       data = decodeBase64(dataUrl.slice(dataUrl.indexOf(',') + 1));
       const crc = crc32(data);
       for (const [header, at] of [
@@ -138,7 +160,7 @@ function patchPlaceholders(buf, store, type) {
     cd += cdLength;
   }
   if (expectedLocal !== cdOffset || cd !== eocd) return null;
-  if (restored.length !== store.filter(Boolean).length) return null;
+  if (restored.size !== store.length) return null;
   const end = buf.slice(eocd);
   new DataView(end.buffer).setUint32(16, newOffset, true);
   return new Blob([...localParts, ...centralParts, end], { type });
@@ -148,7 +170,8 @@ function patchPlaceholders(buf, store, type) {
  * Generates the export's zip with the parked image bytes in place of their placeholders. The
  * placeholders are stored entries (storeCompressedMedia), so they are patched into the generated
  * zip directly; for any other outcome the bytes are swapped in through JSZip and the zip is
- * generated again.
+ * generated again. Rejects when a placeholder is invalid, repeated or missing, or when the deck
+ * would exceed the 4 GiB a zip without ZIP64 can address.
  *
  * @param {import('jszip')} zip - The export's zip, still holding PptxGenJS's placeholder entries.
  * @param {string[] | null} store - The list `deferImageData` filled during this export.
@@ -158,11 +181,13 @@ function patchPlaceholders(buf, store, type) {
 export async function generateWithDeferredMedia(zip, store, generate) {
   const blob = await generate();
   if (!store || store.length === 0) return blob;
+  assertClassicZipSize(blob.size, store);
   try {
     const patched = patchPlaceholders(new Uint8Array(await blob.arrayBuffer()), store, blob.type);
     if (patched) return patched;
   } catch {
-    // Truncated or unexpected zip: fall through to JSZip.
+    // Truncated or unexpected zip, or an invalid placeholder: fall through to JSZip, which
+    // rejects the latter with the same check.
   }
   await restoreDeferredMedia(zip, store);
   return generate();
@@ -171,6 +196,7 @@ export async function generateWithDeferredMedia(zip, store, generate) {
 // Fallback when patchPlaceholders cannot patch the generated zip: swaps the entries through JSZip,
 // stored like the compressed media they are.
 async function restoreDeferredMedia(zip, store) {
+  const restored = new Set();
   const entries = [];
   zip.forEach((relativePath, file) => {
     if (!file.dir && relativePath.startsWith('ppt/media/') && !relativePath.endsWith('.svg')) {
@@ -180,12 +206,15 @@ async function restoreDeferredMedia(zip, store) {
   for (const [relativePath, file] of entries) {
     const content = await file.async('string');
     if (!content.startsWith(MARKER)) continue;
-    const index = Number(content.slice(MARKER.length));
-    const data = store[index];
+    const data = store[claimIndex(content.slice(MARKER.length), store, restored)];
     zip.file(relativePath, decodeBase64(data.slice(data.indexOf(',') + 1)), {
       binary: true,
       date: file.date,
       compression: 'STORE',
     });
+  }
+  if (restored.size !== store.length) {
+    const missing = store.findIndex((_, index) => !restored.has(index));
+    throw new Error(`Deferred image ${missing} has no placeholder in the exported zip`);
   }
 }

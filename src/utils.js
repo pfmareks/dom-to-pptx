@@ -385,7 +385,10 @@ export function getBorderInfo(style, scale) {
  */
 export function generateCompositeBorderSVG(w, h, radius, sides) {
   radius = radius / 2; // Adjust for SVG rendering
-  const clipId = 'clip_' + Math.random().toString(36).substr(2, 9);
+  // The SVG is its own document, so the id only has to be unique within it. A fixed id keeps
+  // identical borders byte-identical, which lets the browser reuse one decoded image for all of
+  // them when PptxGenJS rasterizes its PNG previews.
+  const clipId = 'clip_border';
   let borderRects = '';
 
   if (sides.top.width > 0 && sides.top.color) {

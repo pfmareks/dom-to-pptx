@@ -154,6 +154,23 @@ export async function normalizePptxZip(zip, options = {}) {
   }
 }
 
+// Already-compressed media formats: DEFLATE recovers almost nothing on them.
+const COMPRESSED_MEDIA = /^ppt\/media\/.+\.(png|jpe?g|gif)$/i;
+
+/**
+ * Marks already-compressed media entries (PNG, JPEG, GIF under ppt/media/) to be written with STORE,
+ * so the final re-zip only deflates the XML parts. Call it right before generateAsync. For entries
+ * loaded from a zip that already stored them (PptxGenJS writes STORE), JSZip then copies the bytes
+ * through without inflating, deflating or recomputing the CRC.
+ *
+ * @param {import('jszip')} zip - JSZip instance with the loaded PPTX package.
+ */
+export function storeCompressedMedia(zip) {
+  zip.forEach((relativePath, file) => {
+    if (COMPRESSED_MEDIA.test(relativePath)) file.options.compression = 'STORE';
+  });
+}
+
 function cleanParagraphProperties(doc) {
   let mutated = false;
   const elements = Array.from(doc.getElementsByTagName('*'));

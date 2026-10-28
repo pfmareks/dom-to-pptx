@@ -2,7 +2,8 @@
 import * as PptxGenJSImport from 'pptxgenjs';
 import html2canvas from 'html2canvas';
 import { PPTXEmbedFonts } from './font-embedder.js';
-import { normalizePptxZip } from './pptx-normalizer.js';
+import { normalizePptxZip, storeCompressedMedia } from './pptx-normalizer.js';
+import { deferImageData, generateWithDeferredMedia } from './deferred-media.js';
 import JSZip from 'jszip';
 
 // Normalize import
@@ -122,6 +123,9 @@ export async function exportToPptx(target, options = {}) {
     // this export because the traversal asks about the same parents repeatedly.
     _textContainerCache: new WeakMap(),
     _computedStyleCache: new WeakMap(),
+    // Image bytes bypass PptxGenJS when its output is reloaded below; skipNormalize returns that
+    // output as-is, so it keeps the data inline.
+    _deferredMedia: options.skipNormalize === true ? null : [],
   };
 
   const elements = Array.isArray(target) ? target : [target];
@@ -329,7 +333,8 @@ export async function exportToPptx(target, options = {}) {
     if (options.skipNormalize !== true) {
       await normalizePptxZip(zip, extendedOptions);
     }
-    finalBlob = await embedder.generateBlob();
+    storeCompressedMedia(zip);
+    finalBlob = await generateWithDeferredMedia(zip, extendedOptions._deferredMedia, () => embedder.generateBlob());
   } else {
     // No fonts to embed — still re-zip with DEFLATE and strip dangling Overrides
     // so Microsoft PowerPoint accepts the file (PptxGenJS leaves both issues
@@ -340,11 +345,14 @@ export async function exportToPptx(target, options = {}) {
     } else {
       const zip = await JSZip.loadAsync(initialBlob);
       await normalizePptxZip(zip, extendedOptions);
-      finalBlob = await zip.generateAsync({
-        type: 'blob',
-        compression: 'DEFLATE',
-        compressionOptions: { level: 6 },
-      });
+      storeCompressedMedia(zip);
+      finalBlob = await generateWithDeferredMedia(zip, extendedOptions._deferredMedia, () =>
+        zip.generateAsync({
+          type: 'blob',
+          compression: 'DEFLATE',
+          compressionOptions: { level: 6 },
+        })
+      );
     }
   }
 
@@ -529,7 +537,7 @@ async function processSlide(root, slide, pptx, globalOptions = {}) {
     item.options.objectName = transportVal;
 
     if (item.type === 'shape') slide.addShape(item.shapeType, item.options);
-    if (item.type === 'image') slide.addImage(item.options);
+    if (item.type === 'image') slide.addImage(deferImageData(item.options, globalOptions._deferredMedia));
     if (item.type === 'text') slide.addText(item.textParts, item.options);
     if (item.type === 'table') {
       slide.addTable(item.tableData.rows, {

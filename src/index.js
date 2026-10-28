@@ -3,6 +3,7 @@ import * as PptxGenJSImport from 'pptxgenjs';
 import html2canvas from 'html2canvas';
 import { PPTXEmbedFonts } from './font-embedder.js';
 import { normalizePptxZip, storeCompressedMedia } from './pptx-normalizer.js';
+import { deferImageData, restoreDeferredMedia } from './deferred-media.js';
 import JSZip from 'jszip';
 
 // Normalize import
@@ -122,6 +123,9 @@ export async function exportToPptx(target, options = {}) {
     // this export because the traversal asks about the same parents repeatedly.
     _textContainerCache: new WeakMap(),
     _computedStyleCache: new WeakMap(),
+    // Image bytes bypass PptxGenJS when its output is reloaded below; skipNormalize returns that
+    // output as-is, so it keeps the data inline.
+    _deferredMedia: options.skipNormalize === true ? null : [],
   };
 
   const elements = Array.isArray(target) ? target : [target];
@@ -254,6 +258,7 @@ export async function exportToPptx(target, options = {}) {
 
     // Load into Embedder
     const zip = await JSZip.loadAsync(initialBlob);
+    await restoreDeferredMedia(zip, extendedOptions._deferredMedia);
     const embedder = new PPTXEmbedFonts();
     await embedder.loadZip(zip);
 
@@ -340,6 +345,7 @@ export async function exportToPptx(target, options = {}) {
       finalBlob = initialBlob;
     } else {
       const zip = await JSZip.loadAsync(initialBlob);
+      await restoreDeferredMedia(zip, extendedOptions._deferredMedia);
       await normalizePptxZip(zip, extendedOptions);
       storeCompressedMedia(zip);
       finalBlob = await zip.generateAsync({
@@ -531,7 +537,7 @@ async function processSlide(root, slide, pptx, globalOptions = {}) {
     item.options.objectName = transportVal;
 
     if (item.type === 'shape') slide.addShape(item.shapeType, item.options);
-    if (item.type === 'image') slide.addImage(item.options);
+    if (item.type === 'image') slide.addImage(deferImageData(item.options, globalOptions._deferredMedia));
     if (item.type === 'text') slide.addText(item.textParts, item.options);
     if (item.type === 'table') {
       slide.addTable(item.tableData.rows, {

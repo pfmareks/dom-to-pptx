@@ -3,8 +3,51 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import JSZip from 'jszip';
 import { exportToPptx } from '../index.js';
 
-// 1x1 red PNG.
-const PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==';
+// Two distinct 1x1 PNGs.
+const RED_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==';
+const BLUE_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGOQkZIGAACnAFJfxMSBAAAAAElFTkSuQmCC';
+
+// JSDOM has no layout engine.
+function stubRect(node, left, top, width, height) {
+  node.getBoundingClientRect = () => ({
+    width,
+    height,
+    left,
+    top,
+    right: left + width,
+    bottom: top + height,
+    x: left,
+    y: top,
+  });
+}
+
+// Exports one slide holding a <canvas> per PNG, left to right, and returns the .pptx bytes.
+async function exportCanvases(pngs, options = {}) {
+  const slide = document.createElement('div');
+  document.body.appendChild(slide);
+  stubRect(slide, 0, 0, 960, 540);
+  pngs.forEach((png, i) => {
+    const canvas = document.createElement('canvas');
+    canvas.toDataURL = () => `data:image/png;base64,${png}`;
+    slide.appendChild(canvas);
+    stubRect(canvas, 10 + i * 200, 10, 100, 100);
+  });
+  try {
+    const blob = await exportToPptx(slide, { skipDownload: true, autoEmbedFonts: false, ...options });
+    return new Uint8Array(await blob.arrayBuffer());
+  } finally {
+    document.body.removeChild(slide);
+  }
+}
+
+// Base64 content of every PNG media entry, in entry-name order.
+async function mediaPngs(bytes) {
+  const zip = await JSZip.loadAsync(bytes);
+  const names = Object.keys(zip.files)
+    .filter((name) => /^ppt\/media\/.+\.png$/.test(name))
+    .sort();
+  return Promise.all(names.map((name) => zip.file(name).async('base64')));
+}
 
 // Compression method per entry name, read from the local file headers (0 = STORE, 8 = DEFLATE).
 function entryMethods(bytes) {
@@ -23,57 +66,44 @@ function entryMethods(bytes) {
   return methods;
 }
 
-describe('exported package compression', () => {
+describe('exported package media', () => {
   beforeAll(() => {
-    // JSDOM has no canvas backend: colour parsing needs a 2D context, the <canvas> export path toDataURL.
+    // Colour parsing needs a 2D context, which JSDOM does not provide.
     HTMLCanvasElement.prototype.getContext = () => ({
       fillStyle: '',
       clearRect: () => {},
       fillRect: () => {},
       getImageData: () => ({ data: [0, 0, 0, 0] }),
     });
-    HTMLCanvasElement.prototype.toDataURL = () => `data:image/png;base64,${PNG_BASE64}`;
   });
 
-  it('stores PNG media as-is and deflates the XML parts', async () => {
-    const slide = document.createElement('div');
-    const canvas = document.createElement('canvas');
-    slide.appendChild(canvas);
-    document.body.appendChild(slide);
-    // JSDOM has no layout engine.
-    slide.getBoundingClientRect = () => ({
-      width: 960,
-      height: 540,
-      left: 0,
-      top: 0,
-      right: 960,
-      bottom: 540,
-      x: 0,
-      y: 0,
-    });
-    canvas.getBoundingClientRect = () => ({
-      width: 100,
-      height: 100,
-      left: 10,
-      top: 10,
-      right: 110,
-      bottom: 110,
-      x: 10,
-      y: 10,
-    });
+  it("writes each image's own bytes, stored as-is, and deflates the XML parts", async () => {
+    const bytes = await exportCanvases([RED_PNG, BLUE_PNG]);
 
-    const blob = await exportToPptx(slide, { skipDownload: true, autoEmbedFonts: false });
-    const bytes = new Uint8Array(await blob.arrayBuffer());
-    document.body.removeChild(slide);
-
+    expect(await mediaPngs(bytes)).toEqual([RED_PNG, BLUE_PNG]);
     const methods = entryMethods(bytes);
-    const media = Object.keys(methods).filter((name) => name.startsWith('ppt/media/') && !name.endsWith('/'));
-    expect(media).toHaveLength(1);
-    expect(methods[media[0]]).toBe(0);
+    for (const name of Object.keys(methods).filter((n) => /^ppt\/media\/.+\.png$/.test(n))) {
+      expect(methods[name]).toBe(0);
+    }
     expect(methods['ppt/slides/slide1.xml']).toBe(8);
     expect(methods['[Content_Types].xml']).toBe(8);
+  });
 
-    const zip = await JSZip.loadAsync(bytes);
-    expect(await zip.file(media[0]).async('base64')).toBe(PNG_BASE64);
+  it('keeps the image bytes when skipNormalize returns the PptxGenJS output as-is', async () => {
+    const bytes = await exportCanvases([RED_PNG, BLUE_PNG], { skipNormalize: true });
+
+    expect(await mediaPngs(bytes)).toEqual([RED_PNG, BLUE_PNG]);
+  });
+
+  it('writes the image bytes in browsers without Uint8Array.fromBase64', async () => {
+    const fromBase64 = Uint8Array.fromBase64;
+    delete Uint8Array.fromBase64;
+    try {
+      const bytes = await exportCanvases([RED_PNG, BLUE_PNG]);
+
+      expect(await mediaPngs(bytes)).toEqual([RED_PNG, BLUE_PNG]);
+    } finally {
+      if (fromBase64) Uint8Array.fromBase64 = fromBase64;
+    }
   });
 });

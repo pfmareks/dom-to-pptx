@@ -2,9 +2,9 @@
 //
 // Keeps raster image bytes out of PptxGenJS's base64 path. PptxGenJS decodes every image data URL
 // with JSZip's JavaScript base64 decoder while writing its intermediate zip, which costs seconds on
-// image-heavy decks. Instead it receives a small unique placeholder per image, and the real bytes,
-// decoded natively, are patched into its zip before the export loads it back.
-import JSZip from 'jszip';
+// image-heavy decks. Instead it receives a small unique placeholder per image; the placeholders
+// stay in place through the export's own re-zip, and the real bytes, decoded natively, are patched
+// into the finished zip.
 
 const BASE64_RASTER = /^data:image\/(png|jpe?g|gif);base64,/;
 const MARKER = 'dom-to-pptx-deferred-media:';
@@ -81,12 +81,12 @@ function placeholderIndex(data) {
   return Number(new TextDecoder().decode(data.subarray(MARKER_BYTES.length)));
 }
 
-// Rewrites PptxGenJS's zip with each placeholder entry's data replaced by the parked image bytes.
-// Every other header field is copied as-is, so the loaded entries look exactly as PptxGenJS wrote
-// them, and as stored entries with a known CRC they pass through the final re-zip untouched.
-// Returns null (or throws on a truncated zip) for any layout other than the plain, contiguous zip
-// JSZip writes.
-function patchPlaceholders(buf, store) {
+// Rewrites a zip with each stored placeholder entry's data replaced by the parked image bytes and
+// its CRC and sizes updated; every other header field is copied as-is, so the result is the zip
+// JSZip would have written with the real bytes. Returns null (or throws on a truncated zip) for any
+// layout other than the plain, contiguous zip JSZip writes, or when a parked image has no stored
+// placeholder entry.
+function patchPlaceholders(buf, store, type) {
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const eocd = buf.length - 22;
   if (eocd < 0 || view.getUint32(eocd, true) !== 0x06054b50 || view.getUint16(eocd + 20, true) !== 0) return null;
@@ -138,38 +138,39 @@ function patchPlaceholders(buf, store) {
     cd += cdLength;
   }
   if (expectedLocal !== cdOffset || cd !== eocd) return null;
-  // The decoded bytes replace the data URLs; drop them so both are not held through the re-zip.
-  for (const index of restored) store[index] = null;
+  if (restored.length !== store.filter(Boolean).length) return null;
   const end = buf.slice(eocd);
   new DataView(end.buffer).setUint32(16, newOffset, true);
-  return new Blob([...localParts, ...centralParts, end]);
+  return new Blob([...localParts, ...centralParts, end], { type });
 }
 
 /**
- * Loads PptxGenJS's output with the parked image bytes in place of their placeholders, keeping
- * each entry's name, position and date.
+ * Generates the export's zip with the parked image bytes in place of their placeholders. The
+ * placeholders are stored entries (storeCompressedMedia), so they are patched into the generated
+ * zip directly; for any other outcome the bytes are swapped in through JSZip and the zip is
+ * generated again.
  *
- * @param {Blob} blob - The zip PptxGenJS wrote.
+ * @param {import('jszip')} zip - The export's zip, still holding PptxGenJS's placeholder entries.
  * @param {string[] | null} store - The list `deferImageData` filled during this export.
- * @returns {Promise<import('jszip')>}
+ * @param {() => Promise<Blob>} generate - Generates `zip` with the export's options.
+ * @returns {Promise<Blob>}
  */
-export async function loadWithDeferredMedia(blob, store) {
-  if (!store || store.length === 0) return JSZip.loadAsync(blob);
-  let patched = null;
+export async function generateWithDeferredMedia(zip, store, generate) {
+  const blob = await generate();
+  if (!store || store.length === 0) return blob;
   try {
-    patched = patchPlaceholders(new Uint8Array(await blob.arrayBuffer()), store);
+    const patched = patchPlaceholders(new Uint8Array(await blob.arrayBuffer()), store, blob.type);
+    if (patched) return patched;
   } catch {
-    // Truncated or unexpected zip: leave it to JSZip below.
+    // Truncated or unexpected zip: fall through to JSZip.
   }
-  if (patched) return JSZip.loadAsync(patched);
-  const zip = await JSZip.loadAsync(blob);
   await restoreDeferredMedia(zip, store);
-  return zip;
+  return generate();
 }
 
-// Fallback for a zip layout patchPlaceholders does not handle: swaps the entries through JSZip.
+// Fallback when patchPlaceholders cannot patch the generated zip: swaps the entries through JSZip,
+// stored like the compressed media they are.
 async function restoreDeferredMedia(zip, store) {
-  if (!store || store.length === 0) return;
   const entries = [];
   zip.forEach((relativePath, file) => {
     if (!file.dir && relativePath.startsWith('ppt/media/') && !relativePath.endsWith('.svg')) {
@@ -181,6 +182,10 @@ async function restoreDeferredMedia(zip, store) {
     if (!content.startsWith(MARKER)) continue;
     const index = Number(content.slice(MARKER.length));
     const data = store[index];
-    zip.file(relativePath, decodeBase64(data.slice(data.indexOf(',') + 1)), { binary: true, date: file.date });
+    zip.file(relativePath, decodeBase64(data.slice(data.indexOf(',') + 1)), {
+      binary: true,
+      date: file.date,
+      compression: 'STORE',
+    });
   }
 }

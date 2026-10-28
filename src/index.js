@@ -3,7 +3,8 @@ import * as PptxGenJSImport from 'pptxgenjs';
 import html2canvas from 'html2canvas';
 import { PPTXEmbedFonts } from './font-embedder.js';
 import { normalizePptxZip, storeCompressedMedia } from './pptx-normalizer.js';
-import { deferImageData, loadWithDeferredMedia } from './deferred-media.js';
+import { deferImageData, generateWithDeferredMedia } from './deferred-media.js';
+import JSZip from 'jszip';
 
 // Normalize import
 const PptxGenJS = PptxGenJSImport?.default ?? PptxGenJSImport;
@@ -256,7 +257,7 @@ export async function exportToPptx(target, options = {}) {
     const initialBlob = await pptx.write({ outputType: 'blob' });
 
     // Load into Embedder
-    const zip = await loadWithDeferredMedia(initialBlob, extendedOptions._deferredMedia);
+    const zip = await JSZip.loadAsync(initialBlob);
     const embedder = new PPTXEmbedFonts();
     await embedder.loadZip(zip);
 
@@ -333,7 +334,7 @@ export async function exportToPptx(target, options = {}) {
       await normalizePptxZip(zip, extendedOptions);
     }
     storeCompressedMedia(zip);
-    finalBlob = await embedder.generateBlob();
+    finalBlob = await generateWithDeferredMedia(zip, extendedOptions._deferredMedia, () => embedder.generateBlob());
   } else {
     // No fonts to embed — still re-zip with DEFLATE and strip dangling Overrides
     // so Microsoft PowerPoint accepts the file (PptxGenJS leaves both issues
@@ -342,14 +343,16 @@ export async function exportToPptx(target, options = {}) {
     if (options.skipNormalize === true) {
       finalBlob = initialBlob;
     } else {
-      const zip = await loadWithDeferredMedia(initialBlob, extendedOptions._deferredMedia);
+      const zip = await JSZip.loadAsync(initialBlob);
       await normalizePptxZip(zip, extendedOptions);
       storeCompressedMedia(zip);
-      finalBlob = await zip.generateAsync({
-        type: 'blob',
-        compression: 'DEFLATE',
-        compressionOptions: { level: 6 },
-      });
+      finalBlob = await generateWithDeferredMedia(zip, extendedOptions._deferredMedia, () =>
+        zip.generateAsync({
+          type: 'blob',
+          compression: 'DEFLATE',
+          compressionOptions: { level: 6 },
+        })
+      );
     }
   }
 
